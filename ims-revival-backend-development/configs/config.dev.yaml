@@ -101,7 +101,7 @@ temporal:
   host: "temporaldev.cept.gov.in"
   port: "7233"
   namespace: "default"
-  taskqueue: "revival"
+  taskqueue: "revival-tq"
 
 minio:
   url: 

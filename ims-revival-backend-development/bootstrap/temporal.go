@@ -104,6 +104,9 @@ func ProvideTemporalWorker(config *config.Config, c tclient.Client, activities *
 	//Sla update activity
 	w.RegisterActivity(activities.UpdateWorkflowStateActivity)
 
+	// PM integration activities
+	w.RegisterActivity(activities.NotifyPolicyManagementActivity)
+
 	return w
 }
 

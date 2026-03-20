@@ -444,18 +444,8 @@ func (h *RevivalHandler) IndexRevivalRequest(sctx *serverRoute.Context, req port
 		requestDateTime = time.Now()
 	}
 
-	// Validate policy using activity (quick check before starting workflow)
-	// Note: Full validation with maturity date caching happens in workflow via ValidatePolicyActivity
-	_, err := h.activities.ValidatePolicyActivity(sctx.Ctx, req.PolicyNumber)
-	if err != nil {
-		log.Error(nil, "error at validate policy activity", err)
-		return &port.IndexRequestResponse{
-			StatusCodeAndMessage: port.PolicyNotEligible,
-			Data: port.IndexRequestData{
-				Message: err.Error(),
-			},
-		}, nil
-	}
+	// Policy validation moved to workflow (ValidatePolicyActivity is the first activity)
+	// This ensures all validation runs within the Temporal workflow context
 
 	// Generate ticket ID
 	ticketID, err := h.revivalRepo.GenerateTicketID(sctx.Ctx)

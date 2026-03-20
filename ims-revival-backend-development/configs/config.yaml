@@ -4,7 +4,7 @@ temporal:
   host: "localhost"
   port: "7233"
   namespace: "default"
-  taskqueue: "revival"
+  taskqueue: "revival-tq"
 
 db: 
   username: "postgres"

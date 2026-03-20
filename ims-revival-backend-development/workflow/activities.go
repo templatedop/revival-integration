@@ -10,23 +10,26 @@ import (
 
 	"github.com/google/uuid"
 	log "gitlab.cept.gov.in/it-2.0-common/api-log"
+	tclient "go.temporal.io/sdk/client"
 )
 
 // Activities for Revival Workflow
 
 // Activities holds repository dependencies
 type Activities struct {
-	revivalRepo *repo.RevivalRepository
-	policyRepo  *repo.PolicyRepository
-	paymentRepo *repo.PaymentRepository
+	revivalRepo    *repo.RevivalRepository
+	policyRepo     *repo.PolicyRepository
+	paymentRepo    *repo.PaymentRepository
+	temporalClient tclient.Client
 }
 
 // NewActivities creates a new activities instance
-func NewActivities(revivalRepo *repo.RevivalRepository, policyRepo *repo.PolicyRepository, paymentRepo *repo.PaymentRepository) *Activities {
+func NewActivities(revivalRepo *repo.RevivalRepository, policyRepo *repo.PolicyRepository, paymentRepo *repo.PaymentRepository, temporalClient tclient.Client) *Activities {
 	return &Activities{
-		revivalRepo: revivalRepo,
-		policyRepo:  policyRepo,
-		paymentRepo: paymentRepo,
+		revivalRepo:    revivalRepo,
+		policyRepo:     policyRepo,
+		paymentRepo:    paymentRepo,
+		temporalClient: temporalClient,
 	}
 }
 
@@ -822,4 +825,42 @@ func (a *Activities) UpdateWorkflowStateActivity(
 	slaStart, slaEnd time.Time,
 ) error {
 	return a.revivalRepo.UpdateWorkflowState(ctx, requestID, status, slaStart, slaEnd)
+}
+
+// PMCompletionSignal mirrors PM's OperationCompletedSignal for signaling completion back
+type PMCompletionSignal struct {
+	RequestID       string    `json:"request_id"`
+	RequestType     string    `json:"request_type"`
+	Outcome         string    `json:"outcome"`                    // APPROVED, REJECTED, WITHDRAWN, TIMEOUT
+	StateTransition string    `json:"state_transition,omitempty"` // e.g. "REVIVAL_PENDING→ACTIVE"
+	CompletedAt     time.Time `json:"completed_at"`
+}
+
+// NotifyPolicyManagementActivity signals PM's PolicyLifecycleWorkflow with the revival completion outcome.
+// This is called after DB status is written, ensuring PM gets notified of the final result.
+// pmWorkflowID is the PM workflow ID (format: "plw-{policyNumber}")
+func (a *Activities) NotifyPolicyManagementActivity(ctx context.Context, pmWorkflowID string, signal PMCompletionSignal) error {
+	if pmWorkflowID == "" {
+		log.Info(ctx, "No PM workflow ID provided, skipping PM notification",
+			"request_id", signal.RequestID)
+		return nil
+	}
+
+	err := a.temporalClient.SignalWorkflow(
+		ctx,
+		pmWorkflowID,
+		"", // Empty run ID signals the latest/current run
+		"revival-completed",
+		signal,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to signal PM workflow %s: %w", pmWorkflowID, err)
+	}
+
+	log.Info(ctx, "Successfully notified Policy Management",
+		"pm_workflow_id", pmWorkflowID,
+		"request_id", signal.RequestID,
+		"outcome", signal.Outcome)
+
+	return nil
 }

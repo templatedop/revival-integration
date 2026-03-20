@@ -776,3 +776,52 @@ func TestRevivalWorkflowStatePMFields(t *testing.T) {
 	assert.Equal(t, "plw-0000000000001", state.PMWorkflowID)
 	assert.Equal(t, "pm-req-789", state.PMRequestID)
 }
+
+// =============================================================================
+// Unit Tests: IsPMIntegrated helper
+// =============================================================================
+
+func TestIsPMIntegrated(t *testing.T) {
+	// PM-integrated mode: PMWorkflowID is set
+	pmInput := IndexRevivalInput{
+		RequestID:    "uuid-123",
+		PolicyNumber: "0000000000001",
+		RequestType:  "REVIVAL",
+		PMWorkflowID: "plw-0000000000001",
+	}
+	assert.True(t, pmInput.IsPMIntegrated())
+
+	// Standalone mode: PMWorkflowID is empty
+	standaloneInput := IndexRevivalInput{
+		TicketID:     "TICKET-001",
+		PolicyNumber: "0000000000001",
+		RequestType:  "installment_revival",
+		IndexedBy:    "user1",
+	}
+	assert.False(t, standaloneInput.IsPMIntegrated())
+}
+
+// =============================================================================
+// Unit Tests: PM contract field mapping (ChildWorkflowInput compatibility)
+// =============================================================================
+
+func TestPMContractFieldMapping(t *testing.T) {
+	// Simulate PM's ChildWorkflowInput fields arriving via JSON deserialization
+	input := IndexRevivalInput{
+		RequestID:        "uuid-idempotency-key",
+		PolicyNumber:     "PLI/2026/000001",
+		PolicyDBID:       42,
+		ServiceRequestID: 100,
+		RequestType:      "REVIVAL",
+		RequestPayload:   []byte(`{"requested_installments": 6}`),
+		PMWorkflowID:     "plw-PLI/2026/000001",
+	}
+
+	assert.Equal(t, "uuid-idempotency-key", input.RequestID)
+	assert.Equal(t, int64(42), input.PolicyDBID)
+	assert.Equal(t, int64(100), input.ServiceRequestID)
+	assert.NotNil(t, input.RequestPayload)
+	assert.True(t, input.IsPMIntegrated())
+	// PMRequestID defaults to RequestID when not explicitly set
+	assert.Empty(t, input.PMRequestID, "PMRequestID is empty; workflow uses RequestID as fallback")
+}

@@ -205,6 +205,7 @@ type ChildWorkflowInput struct {
 	RequestType      string          `json:"request_type"`
 	RequestPayload   json.RawMessage `json:"request_payload"`    // Original JSONB from handler
 	TimeoutAt        time.Time       `json:"timeout_at"`
+	PMWorkflowID     string          `json:"pm_workflow_id"`     // PLW workflow ID for completion signal back to PM
 }
 
 // OperationCompletedSignal is sent by downstream services to PM on completion. [A10.1C]

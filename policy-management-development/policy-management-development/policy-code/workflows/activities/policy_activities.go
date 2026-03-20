@@ -577,6 +577,35 @@ func (a *PolicyActivities) UpdateServiceRequestActivity(ctx context.Context, u S
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FetchRequestPayloadActivity — SELECT request_payload for child workflow dispatch
+// ─────────────────────────────────────────────────────────────────────────────
+
+// FetchRequestPayloadActivity retrieves the request_payload JSONB from service_request
+// by service_request_id. Used before dispatching child workflows so downstream services
+// receive the original request payload. [Constraint 1, A10.1B]
+func (a *PolicyActivities) FetchRequestPayloadActivity(ctx context.Context, serviceRequestID int64, submittedAt *time.Time) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.cfg.GetDuration("db.QueryTimeoutLow"))
+	defer cancel()
+
+	qb := dblib.Psql.Select("request_payload").
+		From(actServiceReqTable).
+		Where(sq.Eq{"request_id": serviceRequestID})
+	// Include partition key when available to avoid cross-partition seq-scans. [D4, §8.3]
+	if submittedAt != nil {
+		qb = qb.Where(sq.Eq{"submitted_at": *submittedAt})
+	}
+
+	type payloadRow struct {
+		RequestPayload json.RawMessage `db:"request_payload"`
+	}
+	row, err := dblib.SelectOne(ctx, a.db, qb, pgx.RowToStructByNameLax[payloadRow])
+	if err != nil {
+		return nil, fmt.Errorf("FetchRequestPayloadActivity srID=%d: %w", serviceRequestID, err)
+	}
+	return row.RequestPayload, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RefreshStateFromDBActivity — SELECT policy for batch edge-case [§9.5.2, A21.1]
 // ─────────────────────────────────────────────────────────────────────────────
 

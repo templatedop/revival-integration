@@ -1099,14 +1099,24 @@ func handleFinancialRequest(ctx workflow.Context, state *PolicyLifecycleState, s
 	taskQueue := domain.DownstreamTaskQueueForType(sig.RequestType)
 	wfType := DownstreamWorkflowTypeForRequest(sig.RequestType)
 
+	// Fetch request_payload from service_request so downstream receives the original
+	// request body (e.g. requested_installments for revival). [A10.1B, Constraint 1]
+	var requestPayload json.RawMessage
+	_ = workflow.ExecuteActivity(shortActCtx(ctx),
+		policyActs.FetchRequestPayloadActivity, sig.ServiceRequestID, sig.SubmittedAt).Get(ctx, &requestPayload)
+
 	// Route to downstream via ExecuteChildWorkflow (fire-and-forget) [Constraint 1]
+	// PMWorkflowID is set to the PLW's own workflow ID so downstream services can
+	// signal completion back to this specific PolicyLifecycleWorkflow instance.
 	childInput := ChildWorkflowInput{
 		RequestID:        dedupKey,
 		PolicyNumber:     state.PolicyNumber,
 		PolicyDBID:       state.PolicyDBID,
 		ServiceRequestID: sig.ServiceRequestID,
 		RequestType:      sig.RequestType,
+		RequestPayload:   requestPayload,
 		TimeoutAt:        timeout,
+		PMWorkflowID:     state.Metadata.WorkflowID, // plw-{policyNumber}
 	}
 	workflow.ExecuteChildWorkflow(childWFCtx(ctx, taskQueue, childID), wfType, childInput)
 

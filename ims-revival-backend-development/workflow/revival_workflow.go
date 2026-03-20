@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,18 +10,38 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// IndexRevivalInput contains all data needed to start the revival workflow
-// Note: MissingDocumentsList is NOT part of indexing - sent by data entry/QC/approver only
-// MaturityDate is fetched via ValidatePolicyActivity (batch query) and cached in workflow state
+// IndexRevivalInput contains all data needed to start the revival workflow.
+// Supports two modes:
+//   - Standalone: REST handler sets TicketID, IndexedBy, IndexedDate, Documents directly
+//   - PM-integrated: PM sends ChildWorkflowInput with RequestID, PolicyDBID, ServiceRequestID,
+//     RequestPayload (JSONB), TimeoutAt, PMWorkflowID. Revival-specific data is extracted
+//     from RequestPayload.
+//
+// MaturityDate is fetched via ValidatePolicyActivity (batch query) and cached in workflow state.
 type IndexRevivalInput struct {
-	TicketID       string    `json:"ticket_id"`
-	PolicyNumber   string    `json:"policy_number"`
-	RequestType    string    `json:"request_type"`
-	IndexedBy      string    `json:"indexed_by"`
-	IndexedDate    time.Time `json:"indexed_date"`
-	Documents      string    `json:"documents"`        // JSONB as string
-	PMWorkflowID   string    `json:"pm_workflow_id"`    // PM's PolicyLifecycleWorkflow ID (e.g. "plw-{policyNumber}")
-	PMRequestID    string    `json:"pm_request_id"`     // PM's service_request ID for completion signal
+	// Common fields (set in both modes)
+	PolicyNumber string `json:"policy_number"`
+	RequestType  string `json:"request_type"`
+
+	// Standalone-mode fields (set by revival's REST handler)
+	TicketID    string    `json:"ticket_id"`
+	IndexedBy   string    `json:"indexed_by"`
+	IndexedDate time.Time `json:"indexed_date"`
+	Documents   string    `json:"documents"` // JSONB as string
+
+	// PM contract fields (set when started as child workflow by PM's PolicyLifecycleWorkflow)
+	RequestID        string          `json:"request_id"`          // PM idempotency key (UUID)
+	PolicyDBID       int64           `json:"policy_db_id"`        // PM's BIGINT policy_id
+	ServiceRequestID int64           `json:"service_request_id"`  // PM's service_request BIGINT
+	RequestPayload   json.RawMessage `json:"request_payload"`     // Original request body JSONB from PM handler
+	TimeoutAt        time.Time       `json:"timeout_at"`          // PM routing timeout
+	PMWorkflowID     string          `json:"pm_workflow_id"`      // PM's PLW workflow ID (e.g. "plw-{policyNumber}")
+	PMRequestID      string          `json:"pm_request_id"`       // PM's request ID for completion signal (= RequestID when from PM)
+}
+
+// IsPMIntegrated returns true when the workflow was started by PM's PolicyLifecycleWorkflow.
+func (i IndexRevivalInput) IsPMIntegrated() bool {
+	return i.PMWorkflowID != ""
 }
 
 // InstallmentRevivalWorkflow is the main workflow orchestrating the complete revival process
@@ -33,16 +54,27 @@ func InstallmentRevivalWorkflow(ctx workflow.Context, input IndexRevivalInput) e
 	workflowID := workflowInfo.WorkflowExecution.ID
 	runID := workflowInfo.WorkflowExecution.RunID
 
+	// When started by PM, use RequestID (PM's idempotency key) as the ticket ID
+	// and set PMRequestID from RequestID if not explicitly provided.
+	ticketID := input.TicketID
+	if ticketID == "" && input.RequestID != "" {
+		ticketID = input.RequestID
+	}
+	pmRequestID := input.PMRequestID
+	if pmRequestID == "" && input.RequestID != "" {
+		pmRequestID = input.RequestID
+	}
+
 	// Workflow state variable
 	// MaturityDate will be set after ValidatePolicyActivity (batch query)
 	state := &RevivalWorkflowState{
 		RequestID:     "", // Will be set after CreateRevivalRequestActivity
-		TicketID:      input.TicketID,
+		TicketID:      ticketID,
 		PolicyNumber:  input.PolicyNumber,
 		CurrentStatus: "INITIALIZING",
 		StartedAt:     workflow.Now(ctx),
 		PMWorkflowID:  input.PMWorkflowID,
-		PMRequestID:   input.PMRequestID,
+		PMRequestID:   pmRequestID,
 	}
 
 	// 🔍 Register query handler - allows external systems to query state

@@ -477,7 +477,9 @@ func (s *PMIntegrationTestSuite) TestNoPMNotificationWhenStandalone() {
 // TEST: PM notification on InstallmentMonitorWorkflow completion
 // =============================================================================
 
-func (s *PMIntegrationTestSuite) TestPMNotificationOnInstallmentMonitorComplete() {
+func (s *PMIntegrationTestSuite) TestInstallmentMonitorCompleteNoPMNotification() {
+	// PM is notified at approval time, not when installments complete.
+	// InstallmentMonitorWorkflow should NOT call NotifyPolicyManagementActivity.
 	s.env.RegisterActivityWithOptions((&MockPMActivities{}).ProcessInstallmentActivity, activity.RegisterOptions{Name: "ProcessInstallmentActivity"})
 
 	input := InstallmentMonitorInput{
@@ -492,16 +494,7 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnInstallmentMonitorComplete(
 	s.env.OnActivity("ProcessInstallmentActivity", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil)
 
-	// Expect PM notification with APPROVED outcome from child workflow
-	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
-		"plw-0000000000001",
-		mock.MatchedBy(func(signal PMCompletionSignal) bool {
-			return signal.RequestID == "pm-req-monitor-001" &&
-				signal.RequestType == "REVIVAL" &&
-				signal.Outcome == "APPROVED" &&
-				signal.StateTransition == "REVIVAL_PENDING→ACTIVE"
-		}),
-	).Return(nil).Once()
+	// NotifyPolicyManagementActivity should NOT be called — PM was already notified at approval
 
 	// Send installment 2 payment
 	s.env.RegisterDelayedCallback(func() {

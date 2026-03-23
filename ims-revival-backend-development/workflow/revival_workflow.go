@@ -624,6 +624,9 @@ WorkflowLoop:
 			state.SLAEndDate = &slaEndDate
 			logger.Info("Approval updated in database", "sla_end_date", slaEndDate)
 
+			// Notify PM immediately: revival approved → release financial lock, set ACTIVE
+			notifyPolicyManagement(ctx, state, "APPROVED", "REVIVAL_PENDING→ACTIVE")
+
 			// ✅ Approval processing complete - break loop and continue to collection
 			break WorkflowLoop
 		}
@@ -795,8 +798,7 @@ WorkflowLoop:
 		state.CurrentStatus = "COMPLETED"
 		state.CompletedAt = timePtr(workflow.Now(ctx))
 
-		// Notify PM: revival completed (no pending installments)
-		notifyPolicyManagement(ctx, state, "APPROVED", "REVIVAL_PENDING→ACTIVE")
+		// PM already notified at approval time — no duplicate signal needed
 	}
 
 	// If first collection occurred, wait for child workflow to start before completing parent
@@ -1125,10 +1127,7 @@ func InstallmentMonitorWorkflow(ctx workflow.Context, input InstallmentMonitorIn
 		"request_id", input.RequestID,
 		"total_installments", totalInstallments)
 
-	// Notify PM: revival completed
-	if input.PMWorkflowID != "" {
-		notifyPMFromChild(ctx, input, "APPROVED", "REVIVAL_PENDING→ACTIVE")
-	}
+	// PM already notified at approval time — no duplicate signal needed
 
 	return nil
 }

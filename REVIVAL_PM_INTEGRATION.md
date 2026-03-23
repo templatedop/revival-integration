@@ -177,18 +177,23 @@ When PM receives `"revival-completed"`, `handleOperationCompleted` runs:
 
 ---
 
-## Revival Terminal Points → PM Notification
+## Revival → PM Notification Points
 
-Revival calls `notifyPolicyManagement()` at every terminal point:
+Revival calls `notifyPolicyManagement()` at these points:
 
-| Terminal State | Outcome Sent | Trigger |
-|----------------|-------------|---------|
+| Event | Outcome Sent | Trigger |
+|-------|-------------|---------|
+| `APPROVED` | `APPROVED` | Approver approves — **immediately**, regardless of pending installments |
 | `VALIDATION_FAILED` | `REJECTED` | `ValidatePolicyActivity` fails |
 | `REJECTED` | `REJECTED` | Approver rejects request |
 | `TERMINATED` | `TIMEOUT` | 60-day SLA timer expires |
-| `COMPLETED` (parent) | `APPROVED` | Suspense covers all installments |
-| `COMPLETED` (child) | `APPROVED` | All installments paid in `InstallmentMonitorWorkflow` |
 | `DEFAULTED` (child) | `REJECTED` | Installment default in `InstallmentMonitorWorkflow` |
+
+**Key design decision:** PM is notified of `APPROVED` at approval time, not when installments complete. This means:
+- The financial lock is released immediately after approval
+- Policy status transitions to `ACTIVE` right away
+- Installment collection (first premium + remaining installments) proceeds independently
+- If installments later default, a separate `REJECTED` signal reverts the policy
 
 When `PMWorkflowID` is empty (standalone mode), notifications are silently skipped.
 
@@ -276,7 +281,7 @@ func (a *PolicyActivities) FetchRequestPayloadActivity(
 | `TestPMNotificationOnSLATimeout` | PM notified with TIMEOUT on SLA expiry |
 | `TestPMNotificationOnCompletedNoPending` | PM notified with APPROVED when suspense covers all |
 | `TestNoPMNotificationWhenStandalone` | No notification when PMWorkflowID is empty |
-| `TestPMNotificationOnInstallmentMonitorComplete` | Child workflow sends APPROVED |
+| `TestInstallmentMonitorCompleteNoPMNotification` | Child workflow does NOT send APPROVED (PM already notified at approval) |
 | `TestPMNotificationOnInstallmentDefault` | Child workflow sends REJECTED on default |
 | `TestNoNotificationFromChildWhenStandalone` | Child skips notification in standalone mode |
 | `TestValidationRunsInWorkflow` | ValidatePolicyActivity called inside workflow |

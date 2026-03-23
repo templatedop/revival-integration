@@ -310,14 +310,14 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnSLATimeout() {
 		}),
 	).Return(nil).Once()
 
-	// Phase-2: Expect TIMEOUT notification when SLA expires
+	// Phase-2: Expect VOID notification when SLA expires
 	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
 		"plw-0000000000001",
 		"revival-completed",
 		mock.MatchedBy(func(signal PMCompletionSignal) bool {
 			return signal.RequestID == "pm-req-sla-001" &&
 				signal.RequestType == "REVIVAL" &&
-				signal.Outcome == "TIMEOUT" &&
+				signal.Outcome == "VOID" &&
 				signal.StateTransition == "ACTIVE→VOID"
 		}),
 	).Return(nil).Once()
@@ -544,14 +544,14 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnInstallmentDefault() {
 	s.env.OnActivity("HandleDefaultActivity", mock.Anything, mock.Anything, mock.Anything).
 		Return(nil)
 
-	// Phase-2: Expect REJECTED notification for default → VOID (via revival-completed)
+	// Phase-2: Expect VOID notification for default (via revival-completed)
 	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
 		"plw-0000000000001",
 		"revival-completed",
 		mock.MatchedBy(func(signal PMCompletionSignal) bool {
 			return signal.RequestID == "pm-req-default-001" &&
 				signal.RequestType == "REVIVAL" &&
-				signal.Outcome == "REJECTED" &&
+				signal.Outcome == "VOID" &&
 				signal.StateTransition == "ACTIVE→VOID"
 		}),
 	).Return(nil).Once()

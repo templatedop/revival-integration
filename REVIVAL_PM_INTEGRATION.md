@@ -186,8 +186,7 @@ PM's existing `handleOperationCompleted` handler:
 | Outcome | New Policy Status | When |
 |---------|-------------------|------|
 | `APPROVED` | `ACTIVE` (no-op, already ACTIVE) | Not currently sent (all-paid path has no signal) |
-| `REJECTED` | `VOID` | Installment default |
-| `TIMEOUT` | `VOID` | 60-day SLA expired |
+| `VOID` | `VOID` | Installment default or 60-day SLA expired |
 
 ### Pre-Approval Failures (Single Phase)
 
@@ -202,8 +201,8 @@ If the request fails **before approval** (validation failure, approver rejects),
 | Approver approves | `revival-approved` | `APPROVED` | `REVIVAL_PENDING→ACTIVE` |
 | Validation fails | `revival-completed` | `REJECTED` | `REVIVAL_PENDING→VALIDATION_FAILED` |
 | Approver rejects | `revival-completed` | `REJECTED` | `REVIVAL_PENDING→REJECTED` |
-| 60-day SLA expires | `revival-completed` | `TIMEOUT` | `ACTIVE→VOID` |
-| Installment default | `revival-completed` | `REJECTED` | `ACTIVE→VOID` |
+| 60-day SLA expires | `revival-completed` | `VOID` | `ACTIVE→VOID` |
+| Installment default | `revival-completed` | `VOID` | `ACTIVE→VOID` |
 
 When `PMWorkflowID` is empty (standalone mode), notifications are silently skipped.
 
@@ -270,8 +269,7 @@ func (a *PolicyActivities) FetchRequestPayloadActivity(
 | `TestChildWorkflowInput_RequestPayloadPopulated` | RequestPayload carries original request body |
 | `TestRevivalCompletionSignal_*` | APPROVED / REJECTED / TIMEOUT outcomes |
 | `TestResolveCompletionTransition_RevivalApproved` | REVIVAL + APPROVED → ACTIVE (non-terminal) |
-| `TestResolveCompletionTransition_RevivalRejected` | REVIVAL + REJECTED → VOID (installment default) |
-| `TestResolveCompletionTransition_RevivalTimeout` | REVIVAL + TIMEOUT → VOID (SLA expired) |
+| `TestResolveCompletionTransition_RevivalVoid` | REVIVAL + VOID → VOID (installment default or SLA timeout) |
 | `TestDownstreamTaskQueue_Revival` | Routes to `"revival-tq"` |
 | `TestDownstreamWorkflowType_Revival` | Maps to `"InstallmentRevivalWorkflow"` |
 | `TestDownstreamChildIDPrefix_Revival` | Prefix is `"rev"` |
@@ -288,11 +286,11 @@ func (a *PolicyActivities) FetchRequestPayloadActivity(
 | `TestPMFieldsPropagatedToWorkflowState` | PM fields reach workflow state and are queryable |
 | `TestPMNotificationOnRejection` | PM notified with REJECTED on approval denial |
 | `TestPMNotificationOnValidationFailed` | PM notified with REJECTED on validation failure |
-| `TestPMNotificationOnSLATimeout` | Phase-1 APPROVED + Phase-2 TIMEOUT both sent on SLA expiry |
+| `TestPMNotificationOnSLATimeout` | Phase-1 APPROVED + Phase-2 VOID both sent on SLA expiry |
 | `TestPMNotificationOnCompletedNoPending` | Phase-1 APPROVED sent via `revival-approved` channel |
 | `TestNoPMNotificationWhenStandalone` | No notification when PMWorkflowID is empty |
 | `TestInstallmentMonitorCompleteNoPMNotification` | Child workflow does NOT send APPROVED (PM already notified at approval) |
-| `TestPMNotificationOnInstallmentDefault` | Child workflow sends REJECTED via `revival-completed` → VOID |
+| `TestPMNotificationOnInstallmentDefault` | Child workflow sends VOID via `revival-completed` → VOID |
 | `TestNoNotificationFromChildWhenStandalone` | Child skips notification in standalone mode |
 | `TestValidationRunsInWorkflow` | ValidatePolicyActivity called inside workflow |
 | `TestValidationFailurePreventsRequestCreation` | Failed validation stops before DB insert |

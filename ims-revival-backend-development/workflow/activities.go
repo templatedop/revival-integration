@@ -831,7 +831,7 @@ func (a *Activities) UpdateWorkflowStateActivity(
 type PMCompletionSignal struct {
 	RequestID       string    `json:"request_id"`
 	RequestType     string    `json:"request_type"`
-	Outcome         string    `json:"outcome"`                    // APPROVED, REJECTED, WITHDRAWN, TIMEOUT
+	Outcome         string    `json:"outcome"`                    // APPROVED, VOID, REJECTED
 	StateTransition string    `json:"state_transition,omitempty"` // e.g. "REVIVAL_PENDING→ACTIVE"
 	CompletedAt     time.Time `json:"completed_at"`
 }

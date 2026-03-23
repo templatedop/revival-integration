@@ -660,7 +660,7 @@ WorkflowLoop:
 		workflow.ExecuteActivity(activityCtx, "TerminateRevivalActivity", state.RequestID, "60-day SLA expired").Get(ctx, nil)
 
 		// Phase-2: notify PM — SLA expired, policy should be VOID
-		notifyPolicyManagement(ctx, state, "revival-completed", "TIMEOUT", "ACTIVE→VOID")
+		notifyPolicyManagement(ctx, state, "revival-completed", "VOID", "ACTIVE→VOID")
 	})
 
 	noPendingInstallments := false
@@ -1116,7 +1116,7 @@ func InstallmentMonitorWorkflow(ctx workflow.Context, input InstallmentMonitorIn
 
 			// Phase-2: notify PM — installment defaulted, policy should be VOID
 			if input.PMWorkflowID != "" {
-				notifyPMFromChild(ctx, input, "revival-completed", "REJECTED", "ACTIVE→VOID")
+				notifyPMFromChild(ctx, input, "revival-completed", "VOID", "ACTIVE→VOID")
 			}
 			return nil
 		}

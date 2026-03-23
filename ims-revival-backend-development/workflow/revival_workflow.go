@@ -121,7 +121,7 @@ func InstallmentRevivalWorkflow(ctx workflow.Context, input IndexRevivalInput) e
 		setRecoverableWorkflowError(state, "VALIDATING_POLICY", "Policy validation failed", err, workflow.Now(ctx))
 
 		// Notify PM: validation failed
-		notifyPolicyManagement(ctx, state, "REJECTED", "REVIVAL_PENDING→VALIDATION_FAILED")
+		notifyPolicyManagement(ctx, state, "revival-completed", "REJECTED", "REVIVAL_PENDING→VALIDATION_FAILED")
 		return nil
 	}
 	clearRecoverableWorkflowError(state)
@@ -535,7 +535,7 @@ WorkflowLoop:
 				logger.Info("Revival request rejected", "rejected_by", approvalSignal.ApprovedBy, "comments", approvalSignal.Comments)
 
 				// Notify PM: revival rejected
-				notifyPolicyManagement(ctx, state, "REJECTED", "REVIVAL_PENDING→REJECTED")
+				notifyPolicyManagement(ctx, state, "revival-completed", "REJECTED", "REVIVAL_PENDING→REJECTED")
 				return nil
 			}
 
@@ -624,8 +624,8 @@ WorkflowLoop:
 			state.SLAEndDate = &slaEndDate
 			logger.Info("Approval updated in database", "sla_end_date", slaEndDate)
 
-			// Notify PM immediately: revival approved → release financial lock, set ACTIVE
-			notifyPolicyManagement(ctx, state, "APPROVED", "REVIVAL_PENDING→ACTIVE")
+			// Phase-1: notify PM immediately — release financial lock, set ACTIVE
+			notifyPolicyManagement(ctx, state, "revival-approved", "APPROVED", "REVIVAL_PENDING→ACTIVE")
 
 			// ✅ Approval processing complete - break loop and continue to collection
 			break WorkflowLoop
@@ -659,8 +659,8 @@ WorkflowLoop:
 		})
 		workflow.ExecuteActivity(activityCtx, "TerminateRevivalActivity", state.RequestID, "60-day SLA expired").Get(ctx, nil)
 
-		// Notify PM: SLA timeout
-		notifyPolicyManagement(ctx, state, "TIMEOUT", "REVIVAL_PENDING→TERMINATED")
+		// Phase-2: notify PM — SLA expired, policy should be VOID
+		notifyPolicyManagement(ctx, state, "revival-completed", "TIMEOUT", "ACTIVE→VOID")
 	})
 
 	noPendingInstallments := false
@@ -1114,9 +1114,9 @@ func InstallmentMonitorWorkflow(ctx workflow.Context, input InstallmentMonitorIn
 				"request_id", input.RequestID,
 				"total_installments", totalInstallments)
 
-			// Notify PM: revival defaulted (DB status already written by HandleDefaultActivity)
+			// Phase-2: notify PM — installment defaulted, policy should be VOID
 			if input.PMWorkflowID != "" {
-				notifyPMFromChild(ctx, input, "REJECTED", "REVIVAL_PENDING→DEFAULTED")
+				notifyPMFromChild(ctx, input, "revival-completed", "REJECTED", "ACTIVE→VOID")
 			}
 			return nil
 		}
@@ -1267,8 +1267,10 @@ type InstallmentMonitorInput struct {
 }
 
 // notifyPolicyManagement sends the revival completion signal to PM's PolicyLifecycleWorkflow.
+// notifyPolicyManagement sends a signal to PM's PolicyLifecycleWorkflow.
+// signalChannel must be "revival-approved" (phase-1) or "revival-completed" (phase-2).
 // DB status must already be written before calling this.
-func notifyPolicyManagement(ctx workflow.Context, state *RevivalWorkflowState, outcome, stateTransition string) {
+func notifyPolicyManagement(ctx workflow.Context, state *RevivalWorkflowState, signalChannel, outcome, stateTransition string) {
 	if state.PMWorkflowID == "" {
 		return // No PM integration, skip
 	}
@@ -1299,17 +1301,19 @@ func notifyPolicyManagement(ctx workflow.Context, state *RevivalWorkflowState, o
 		},
 	})
 
-	err := workflow.ExecuteActivity(activityCtx, "NotifyPolicyManagementActivity", state.PMWorkflowID, signal).Get(ctx, nil)
+	err := workflow.ExecuteActivity(activityCtx, "NotifyPolicyManagementActivity", state.PMWorkflowID, signalChannel, signal).Get(ctx, nil)
 	if err != nil {
 		logger.Error("Failed to notify Policy Management",
 			"pm_workflow_id", state.PMWorkflowID,
+			"signal_channel", signalChannel,
 			"outcome", outcome,
 			"error", err)
 	}
 }
 
-// notifyPMFromChild sends the revival completion signal to PM from the InstallmentMonitorWorkflow (child).
-func notifyPMFromChild(ctx workflow.Context, input InstallmentMonitorInput, outcome, stateTransition string) {
+// notifyPMFromChild sends a signal to PM from the InstallmentMonitorWorkflow (child).
+// signalChannel must be "revival-approved" or "revival-completed".
+func notifyPMFromChild(ctx workflow.Context, input InstallmentMonitorInput, signalChannel, outcome, stateTransition string) {
 	logger := workflow.GetLogger(ctx)
 
 	requestID := input.PMRequestID
@@ -1335,10 +1339,11 @@ func notifyPMFromChild(ctx workflow.Context, input InstallmentMonitorInput, outc
 		},
 	})
 
-	err := workflow.ExecuteActivity(activityCtx, "NotifyPolicyManagementActivity", input.PMWorkflowID, signal).Get(ctx, nil)
+	err := workflow.ExecuteActivity(activityCtx, "NotifyPolicyManagementActivity", input.PMWorkflowID, signalChannel, signal).Get(ctx, nil)
 	if err != nil {
 		logger.Error("Failed to notify Policy Management from child workflow",
 			"pm_workflow_id", input.PMWorkflowID,
+			"signal_channel", signalChannel,
 			"outcome", outcome,
 			"error", err)
 	}

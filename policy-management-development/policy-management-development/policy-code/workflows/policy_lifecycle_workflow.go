@@ -514,6 +514,7 @@ func PolicyLifecycleWorkflow(ctx workflow.Context, initialState PolicyLifecycleS
 	forcedSurCompletedCh := workflow.GetSignalChannel(ctx, SignalForcedSurrenderCompleted)
 	loanCompletedCh := workflow.GetSignalChannel(ctx, SignalLoanCompleted)
 	loanRepayCompletedCh := workflow.GetSignalChannel(ctx, SignalLoanRepaymentCompleted)
+	revivalApprovedCh := workflow.GetSignalChannel(ctx, SignalRevivalApproved)
 	revivalCompletedCh := workflow.GetSignalChannel(ctx, SignalRevivalCompleted)
 	claimSettledCh := workflow.GetSignalChannel(ctx, SignalClaimSettled)
 	commutationCompletedCh := workflow.GetSignalChannel(ctx, SignalCommutationCompleted)
@@ -662,6 +663,13 @@ func PolicyLifecycleWorkflow(ctx workflow.Context, initialState PolicyLifecycleS
 			c.Receive(ctx, &sig)
 			sig.RequestType = domain.RequestTypeLoanRepayment
 			reachedTerminal = handleOperationCompleted(ctx, &state, sig)
+		})
+		sel.AddReceive(revivalApprovedCh, func(c workflow.ReceiveChannel, _ bool) {
+			var sig OperationCompletedSignal
+			c.Receive(ctx, &sig)
+			sig.RequestType = domain.RequestTypeRevival
+			sig.Outcome = "APPROVED"
+			handleRevivalApproved(ctx, &state, sig)
 		})
 		sel.AddReceive(revivalCompletedCh, func(c workflow.ReceiveChannel, _ bool) {
 			var sig OperationCompletedSignal
@@ -1302,6 +1310,49 @@ func handleNFRRequest(ctx workflow.Context, state *PolicyLifecycleState, sig Pol
 // Signal Handler: operation-completed (generic + per-type)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// handleRevivalApproved handles the phase-1 "revival-approved" signal.
+// It releases the financial lock and transitions to ACTIVE, but keeps the
+// PendingRequest so the later phase-2 "revival-completed" signal (TIMEOUT/DEFAULT
+// or final success) can still match it.
+func handleRevivalApproved(ctx workflow.Context, state *PolicyLifecycleState, sig OperationCompletedSignal) {
+	// Dedup: use a suffixed key so the phase-2 signal (same RequestID) is not blocked
+	dedupKey := sig.RequestID + "-approved"
+	if _, seen := state.ProcessedSignalIDs[dedupKey]; seen {
+		return
+	}
+
+	// Audit
+	sigPayload, _ := json.Marshal(sig)
+	stateBefore := state.CurrentStatus
+	_ = workflow.ExecuteActivity(shortActCtx(ctx),
+		policyActs.LogSignalReceivedActivity,
+		acts.SignalLogEntry{
+			PolicyID:      state.PolicyDBID,
+			SignalChannel: "revival-approved",
+			SignalPayload: sigPayload,
+			RequestID:     sig.RequestID,
+			Status:        domain.SignalStatusProcessed,
+			StateBefore:   &stateBefore,
+		}).Get(ctx, nil)
+
+	// Release financial lock (same as handleOperationCompleted)
+	if state.ActiveLock != nil && state.ActiveLock.RequestID == sig.RequestID {
+		state.ActiveLock = nil
+		_ = workflow.ExecuteActivity(shortActCtx(ctx),
+			policyActs.ReleaseFinancialLockActivity, state.PolicyDBID).Get(ctx, nil)
+	}
+
+	// Transition to ACTIVE
+	newStatus := domain.StatusActive
+	if newStatus != state.CurrentStatus {
+		doTransition(ctx, state, state.CurrentStatus, newStatus,
+			"REVIVAL APPROVED", domain.RequestTypeRevival, sig.RequestID)
+	}
+
+	// Mark phase-1 as processed (PendingRequest intentionally kept for phase-2)
+	state.ProcessedSignalIDs[dedupKey] = workflow.Now(ctx)
+}
+
 // handleOperationCompleted resolves completion for financial requests.
 // Returns true if a terminal state was reached.
 func handleOperationCompleted(ctx workflow.Context, state *PolicyLifecycleState, sig OperationCompletedSignal) bool {
@@ -1509,9 +1560,11 @@ func resolveCompletionTransition(state *PolicyLifecycleState, sig OperationCompl
 
 	case domain.RequestTypeRevival:
 		if approved {
-			return domain.StatusActive, false // + update PaidToDate
+			// Phase-2 success or pre-approval rejection fallback — no change (already ACTIVE from phase-1)
+			return domain.StatusActive, false
 		}
-		return state.PreviousStatus, false // revert to VL/IL/AL
+		// Phase-2 failure: installment default or SLA timeout → VOID
+		return domain.StatusVoid, false
 
 	case domain.RequestTypeDeathClaim, domain.RequestTypeMaturityClaim, domain.RequestTypeSurvivalBenefit:
 		if approved {

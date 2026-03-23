@@ -169,8 +169,9 @@ func TestResolveCompletionTransition_RevivalApproved(t *testing.T) {
 }
 
 func TestResolveCompletionTransition_RevivalRejected(t *testing.T) {
+	// Phase-2 REJECTED (installment default or pre-approval rejection) → VOID
 	state := &PolicyLifecycleState{
-		CurrentStatus:  domain.StatusRevivalPending,
+		CurrentStatus:  domain.StatusActive, // Already ACTIVE from phase-1
 		PreviousStatus: domain.StatusVoidLapse,
 	}
 	sig := OperationCompletedSignal{
@@ -181,32 +182,33 @@ func TestResolveCompletionTransition_RevivalRejected(t *testing.T) {
 
 	newStatus, isTerminal := resolveCompletionTransition(state, sig)
 
-	if newStatus != domain.StatusVoidLapse {
-		t.Errorf("newStatus = %q; want %q (reverts to PreviousStatus)", newStatus, domain.StatusVoidLapse)
+	if newStatus != domain.StatusVoid {
+		t.Errorf("newStatus = %q; want %q (VOID on installment default)", newStatus, domain.StatusVoid)
 	}
 	if isTerminal {
-		t.Error("revival REJECTED should NOT be terminal (reverts to lapse status)")
+		t.Error("revival REJECTED should NOT be terminal")
 	}
 }
 
-func TestResolveCompletionTransition_RevivalRejectedFromIL(t *testing.T) {
+func TestResolveCompletionTransition_RevivalTimeout(t *testing.T) {
+	// Phase-2 TIMEOUT (60-day SLA expired) → VOID
 	state := &PolicyLifecycleState{
-		CurrentStatus:  domain.StatusRevivalPending,
-		PreviousStatus: domain.StatusInactiveLapse,
+		CurrentStatus:  domain.StatusActive, // Already ACTIVE from phase-1
+		PreviousStatus: domain.StatusVoidLapse,
 	}
 	sig := OperationCompletedSignal{
-		RequestID:   "rev-rejected-il",
+		RequestID:   "rev-timeout-1",
 		RequestType: domain.RequestTypeRevival,
-		Outcome:     domain.RequestOutcomeRejected,
+		Outcome:     domain.RequestOutcomeTimeout,
 	}
 
 	newStatus, isTerminal := resolveCompletionTransition(state, sig)
 
-	if newStatus != domain.StatusInactiveLapse {
-		t.Errorf("newStatus = %q; want %q (reverts to IL)", newStatus, domain.StatusInactiveLapse)
+	if newStatus != domain.StatusVoid {
+		t.Errorf("newStatus = %q; want %q (VOID on SLA timeout)", newStatus, domain.StatusVoid)
 	}
 	if isTerminal {
-		t.Error("revival REJECTED should NOT be terminal")
+		t.Error("revival TIMEOUT should NOT be terminal")
 	}
 }
 
@@ -265,6 +267,9 @@ func TestRoutingTimeout_Revival(t *testing.T) {
 func TestRevivalSignalChannelNames(t *testing.T) {
 	if SignalRevivalRequest != "revival-request" {
 		t.Errorf("SignalRevivalRequest = %q; want %q", SignalRevivalRequest, "revival-request")
+	}
+	if SignalRevivalApproved != "revival-approved" {
+		t.Errorf("SignalRevivalApproved = %q; want %q", SignalRevivalApproved, "revival-approved")
 	}
 	if SignalRevivalCompleted != "revival-completed" {
 		t.Errorf("SignalRevivalCompleted = %q; want %q", SignalRevivalCompleted, "revival-completed")

@@ -61,7 +61,7 @@ func (m *MockPMActivities) TerminateRevivalActivity(ctx interface{}, requestID, 
 func (m *MockPMActivities) FinalizeRevivalAfterFirstCollection(ctx interface{}, requestID string) error {
 	return nil
 }
-func (m *MockPMActivities) NotifyPolicyManagementActivity(ctx interface{}, pmWorkflowID string, signal PMCompletionSignal) error {
+func (m *MockPMActivities) NotifyPolicyManagementActivity(ctx interface{}, pmWorkflowID string, signalChannel string, signal PMCompletionSignal) error {
 	return nil
 }
 func (m *MockPMActivities) ProcessInstallmentActivity(ctx interface{}, requestID string, installmentNumber int, amount float64, paymentMode, status string, collectionDate time.Time) error {
@@ -180,9 +180,10 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnRejection() {
 	s.env.OnActivity("UpdateRevivalStatusActivity", mock.Anything, mock.Anything, mock.Anything).
 		Return(nil)
 
-	// Expect PM notification with REJECTED outcome
+	// Expect PM notification with REJECTED outcome (pre-approval, uses revival-completed)
 	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
 		"plw-0000000000001",
+		"revival-completed",
 		mock.MatchedBy(func(signal PMCompletionSignal) bool {
 			return signal.RequestID == "pm-req-rej-001" &&
 				signal.RequestType == "REVIVAL" &&
@@ -248,9 +249,10 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnValidationFailed() {
 	s.env.OnActivity("ValidatePolicyActivity", mock.Anything, mock.Anything).
 		Return(PolicyValidationResult{}, assert.AnError)
 
-	// Expect PM notification with REJECTED outcome for validation failure
+	// Expect PM notification with REJECTED outcome for validation failure (pre-approval, uses revival-completed)
 	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
 		"plw-0000000000001",
+		"revival-completed",
 		mock.MatchedBy(func(signal PMCompletionSignal) bool {
 			return signal.RequestID == "pm-req-valfail-001" &&
 				signal.RequestType == "REVIVAL" &&
@@ -298,14 +300,25 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnSLATimeout() {
 	s.env.OnActivity("TerminateRevivalActivity", mock.Anything, mock.Anything, mock.Anything).
 		Return(nil)
 
-	// Expect PM notification with TIMEOUT outcome
+	// Phase-1: Expect APPROVED notification at approval time
 	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
 		"plw-0000000000001",
+		"revival-approved",
+		mock.MatchedBy(func(signal PMCompletionSignal) bool {
+			return signal.RequestID == "pm-req-sla-001" &&
+				signal.Outcome == "APPROVED"
+		}),
+	).Return(nil).Once()
+
+	// Phase-2: Expect TIMEOUT notification when SLA expires
+	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
+		"plw-0000000000001",
+		"revival-completed",
 		mock.MatchedBy(func(signal PMCompletionSignal) bool {
 			return signal.RequestID == "pm-req-sla-001" &&
 				signal.RequestType == "REVIVAL" &&
 				signal.Outcome == "TIMEOUT" &&
-				signal.StateTransition == "REVIVAL_PENDING→TERMINATED"
+				signal.StateTransition == "ACTIVE→VOID"
 		}),
 	).Return(nil).Once()
 
@@ -388,9 +401,10 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnCompletedNoPending() {
 	s.env.OnActivity("FinalizeRevivalAfterFirstCollection", mock.Anything, mock.Anything).
 		Return(nil)
 
-	// Expect PM notification with APPROVED outcome
+	// Phase-1: Expect APPROVED notification at approval time (via revival-approved channel)
 	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
 		"plw-0000000000001",
+		"revival-approved",
 		mock.MatchedBy(func(signal PMCompletionSignal) bool {
 			return signal.RequestID == "pm-req-comp-001" &&
 				signal.RequestType == "REVIVAL" &&
@@ -530,14 +544,15 @@ func (s *PMIntegrationTestSuite) TestPMNotificationOnInstallmentDefault() {
 	s.env.OnActivity("HandleDefaultActivity", mock.Anything, mock.Anything, mock.Anything).
 		Return(nil)
 
-	// Expect PM notification with REJECTED outcome for default
+	// Phase-2: Expect REJECTED notification for default → VOID (via revival-completed)
 	s.env.OnActivity("NotifyPolicyManagementActivity", mock.Anything,
 		"plw-0000000000001",
+		"revival-completed",
 		mock.MatchedBy(func(signal PMCompletionSignal) bool {
 			return signal.RequestID == "pm-req-default-001" &&
 				signal.RequestType == "REVIVAL" &&
 				signal.Outcome == "REJECTED" &&
-				signal.StateTransition == "REVIVAL_PENDING→DEFAULTED"
+				signal.StateTransition == "ACTIVE→VOID"
 		}),
 	).Return(nil).Once()
 

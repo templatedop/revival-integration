@@ -836,10 +836,11 @@ type PMCompletionSignal struct {
 	CompletedAt     time.Time `json:"completed_at"`
 }
 
-// NotifyPolicyManagementActivity signals PM's PolicyLifecycleWorkflow with the revival completion outcome.
-// This is called after DB status is written, ensuring PM gets notified of the final result.
-// pmWorkflowID is the PM workflow ID (format: "plw-{policyNumber}")
-func (a *Activities) NotifyPolicyManagementActivity(ctx context.Context, pmWorkflowID string, signal PMCompletionSignal) error {
+// NotifyPolicyManagementActivity signals PM's PolicyLifecycleWorkflow with the revival outcome.
+// signalChannel selects which PM handler receives the signal:
+//   - "revival-approved"  → phase-1: release lock, set ACTIVE, keep PendingRequest
+//   - "revival-completed" → phase-2: final outcome (VOID on default/timeout, cleanup on success)
+func (a *Activities) NotifyPolicyManagementActivity(ctx context.Context, pmWorkflowID string, signalChannel string, signal PMCompletionSignal) error {
 	if pmWorkflowID == "" {
 		log.Info(ctx, "No PM workflow ID provided, skipping PM notification",
 			"request_id", signal.RequestID)
@@ -850,7 +851,7 @@ func (a *Activities) NotifyPolicyManagementActivity(ctx context.Context, pmWorkf
 		ctx,
 		pmWorkflowID,
 		"", // Empty run ID signals the latest/current run
-		"revival-completed",
+		signalChannel,
 		signal,
 	)
 	if err != nil {

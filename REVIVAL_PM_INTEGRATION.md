@@ -151,7 +151,8 @@ These are JSON-compatible. PM's extra `OutcomePayload` field is `omitempty` and 
 | Constant | Value | Direction |
 |----------|-------|-----------|
 | `SignalRevivalRequest` | `"revival-request"` | REST Handler → PM PLW |
-| `SignalRevivalCompleted` | `"revival-completed"` | Revival → PM PLW |
+| `SignalRevivalApproved` | `"revival-approved"` | Revival → PM PLW (phase-1) |
+| `SignalRevivalCompleted` | `"revival-completed"` | Revival → PM PLW (phase-2) |
 | PM Task Queue | `"policy-management-tq"` | PM workflows + activities |
 | Revival Task Queue | `"revival-tq"` | Revival workflows + activities |
 | Child Workflow ID | `"rev-{idempotencyKey}"` | PM-assigned, unique per request |
@@ -159,41 +160,50 @@ These are JSON-compatible. PM's extra `OutcomePayload` field is `omitempty` and 
 
 ---
 
-## PM Completion Handling
+## Two-Phase PM Notification
 
-When PM receives `"revival-completed"`, `handleOperationCompleted` runs:
+Revival uses a **two-phase signal design** to communicate with PM:
 
-1. **Dedup check** — `ProcessedSignalIDs` prevents double-processing
-2. **Match pending request** — finds `PendingRequest` by `RequestID`
-3. **Release financial lock** — allows next financial request on the policy
-4. **Update `service_request`** — status=`COMPLETED`, outcome=`APPROVED`/`REJECTED`/`TIMEOUT`
-5. **State transition** via `resolveCompletionTransition`:
+### Phase 1: `"revival-approved"` — Immediate Approval
 
-| Outcome | New Policy Status | Terminal? |
-|---------|-------------------|-----------|
-| `APPROVED` | `ACTIVE` | No — policy resumes normal lifecycle |
-| `REJECTED` | Reverts to `PreviousStatus` (VL/IL/AL) | No |
-| `TIMEOUT` | Reverts to `PreviousStatus` | No |
+Sent **immediately when the approver approves**, regardless of pending installments.
+
+PM's `handleRevivalApproved` handler:
+1. Releases the financial lock
+2. Transitions policy to `ACTIVE`
+3. **Keeps the PendingRequest** (so phase-2 can still match it)
+4. Dedups with key `{RequestID}-approved` (does not block phase-2)
+
+### Phase 2: `"revival-completed"` — Final Outcome
+
+Sent when the revival reaches its final state (success or failure).
+
+PM's existing `handleOperationCompleted` handler:
+1. Matches and removes the PendingRequest
+2. Updates `service_request` to COMPLETED
+3. Applies state transition via `resolveCompletionTransition`:
+
+| Outcome | New Policy Status | When |
+|---------|-------------------|------|
+| `APPROVED` | `ACTIVE` (no-op, already ACTIVE) | Not currently sent (all-paid path has no signal) |
+| `REJECTED` | `VOID` | Installment default |
+| `TIMEOUT` | `VOID` | 60-day SLA expired |
+
+### Pre-Approval Failures (Single Phase)
+
+If the request fails **before approval** (validation failure, approver rejects), only a single `"revival-completed"` signal is sent. PM handles it normally — the PendingRequest is still intact and the financial lock hasn't been released yet.
 
 ---
 
 ## Revival → PM Notification Points
 
-Revival calls `notifyPolicyManagement()` at these points:
-
-| Event | Outcome Sent | Trigger |
-|-------|-------------|---------|
-| `APPROVED` | `APPROVED` | Approver approves — **immediately**, regardless of pending installments |
-| `VALIDATION_FAILED` | `REJECTED` | `ValidatePolicyActivity` fails |
-| `REJECTED` | `REJECTED` | Approver rejects request |
-| `TERMINATED` | `TIMEOUT` | 60-day SLA timer expires |
-| `DEFAULTED` (child) | `REJECTED` | Installment default in `InstallmentMonitorWorkflow` |
-
-**Key design decision:** PM is notified of `APPROVED` at approval time, not when installments complete. This means:
-- The financial lock is released immediately after approval
-- Policy status transitions to `ACTIVE` right away
-- Installment collection (first premium + remaining installments) proceeds independently
-- If installments later default, a separate `REJECTED` signal reverts the policy
+| Event | Signal Channel | Outcome | State Transition |
+|-------|---------------|---------|-----------------|
+| Approver approves | `revival-approved` | `APPROVED` | `REVIVAL_PENDING→ACTIVE` |
+| Validation fails | `revival-completed` | `REJECTED` | `REVIVAL_PENDING→VALIDATION_FAILED` |
+| Approver rejects | `revival-completed` | `REJECTED` | `REVIVAL_PENDING→REJECTED` |
+| 60-day SLA expires | `revival-completed` | `TIMEOUT` | `ACTIVE→VOID` |
+| Installment default | `revival-completed` | `REJECTED` | `ACTIVE→VOID` |
 
 When `PMWorkflowID` is empty (standalone mode), notifications are silently skipped.
 
@@ -260,14 +270,14 @@ func (a *PolicyActivities) FetchRequestPayloadActivity(
 | `TestChildWorkflowInput_RequestPayloadPopulated` | RequestPayload carries original request body |
 | `TestRevivalCompletionSignal_*` | APPROVED / REJECTED / TIMEOUT outcomes |
 | `TestResolveCompletionTransition_RevivalApproved` | REVIVAL + APPROVED → ACTIVE (non-terminal) |
-| `TestResolveCompletionTransition_RevivalRejected` | REVIVAL + REJECTED → revert to VL |
-| `TestResolveCompletionTransition_RevivalRejectedFromIL` | REVIVAL + REJECTED → revert to IL |
+| `TestResolveCompletionTransition_RevivalRejected` | REVIVAL + REJECTED → VOID (installment default) |
+| `TestResolveCompletionTransition_RevivalTimeout` | REVIVAL + TIMEOUT → VOID (SLA expired) |
 | `TestDownstreamTaskQueue_Revival` | Routes to `"revival-tq"` |
 | `TestDownstreamWorkflowType_Revival` | Maps to `"InstallmentRevivalWorkflow"` |
 | `TestDownstreamChildIDPrefix_Revival` | Prefix is `"rev"` |
 | `TestPreRouteStatus_Revival` | Pre-route status is `REVIVAL_PENDING` |
 | `TestRoutingTimeout_Revival` | Timeout is 30 days |
-| `TestRevivalSignalChannelNames` | Signal names match constants |
+| `TestRevivalSignalChannelNames` | All 3 signal names match constants (`revival-request`, `revival-approved`, `revival-completed`) |
 | `TestRevivalRequiresFinancialLock` | Revival requires exclusive lock |
 | `TestChildWorkflowInput_JSONRoundTrip` | Full JSON marshal/unmarshal preserves all fields |
 
@@ -278,11 +288,11 @@ func (a *PolicyActivities) FetchRequestPayloadActivity(
 | `TestPMFieldsPropagatedToWorkflowState` | PM fields reach workflow state and are queryable |
 | `TestPMNotificationOnRejection` | PM notified with REJECTED on approval denial |
 | `TestPMNotificationOnValidationFailed` | PM notified with REJECTED on validation failure |
-| `TestPMNotificationOnSLATimeout` | PM notified with TIMEOUT on SLA expiry |
-| `TestPMNotificationOnCompletedNoPending` | PM notified with APPROVED when suspense covers all |
+| `TestPMNotificationOnSLATimeout` | Phase-1 APPROVED + Phase-2 TIMEOUT both sent on SLA expiry |
+| `TestPMNotificationOnCompletedNoPending` | Phase-1 APPROVED sent via `revival-approved` channel |
 | `TestNoPMNotificationWhenStandalone` | No notification when PMWorkflowID is empty |
 | `TestInstallmentMonitorCompleteNoPMNotification` | Child workflow does NOT send APPROVED (PM already notified at approval) |
-| `TestPMNotificationOnInstallmentDefault` | Child workflow sends REJECTED on default |
+| `TestPMNotificationOnInstallmentDefault` | Child workflow sends REJECTED via `revival-completed` → VOID |
 | `TestNoNotificationFromChildWhenStandalone` | Child skips notification in standalone mode |
 | `TestValidationRunsInWorkflow` | ValidatePolicyActivity called inside workflow |
 | `TestValidationFailurePreventsRequestCreation` | Failed validation stops before DB insert |

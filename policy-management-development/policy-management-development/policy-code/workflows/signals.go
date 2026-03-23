@@ -39,7 +39,8 @@ const (
 	SignalForcedSurrenderCompleted = "forced-surrender-completed"
 	SignalLoanCompleted            = "loan-completed"
 	SignalLoanRepaymentCompleted   = "loan-repayment-completed"
-	SignalRevivalCompleted         = "revival-completed"
+	SignalRevivalApproved          = "revival-approved"   // Phase-1: approval → release lock, ACTIVE (PendingRequest kept)
+	SignalRevivalCompleted         = "revival-completed"  // Phase-2: final outcome (DEFAULT/TIMEOUT → VOID, or cleanup)
 	SignalClaimSettled             = "claim-settled"
 	SignalCommutationCompleted     = "commutation-completed"
 	SignalConversionCompleted      = "conversion-completed"
